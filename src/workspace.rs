@@ -3,7 +3,7 @@ use std::rc::Rc;
 use gpui::*;
 use gpui::prelude::FluentBuilder;
 
-use crate::state::{AppState, GenerationStatus, LogEntry, STYLES};
+use crate::state::{AppState, GenerationStatus, LogEntry, ImageRecord, STYLES};
 use crate::text_input::TextInput;
 use crate::theme::Theme;
 
@@ -27,6 +27,8 @@ pub struct Workspace {
     pub on_generate: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
     pub on_evolve: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
     pub on_save_key: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
+
+    pub export_status: Option<String>,
 }
 
 impl Workspace {
@@ -47,7 +49,129 @@ impl Workspace {
             on_generate: None,
             on_evolve: None,
             on_save_key: None,
+            export_status: None,
         }
+    }
+
+    fn export_file(src: &std::path::Path, name_hint: &str, ext: &str) -> Result<std::path::PathBuf, String> {
+        let desktop = dirs_next::desktop_dir()
+            .or_else(dirs_next::download_dir)
+            .or_else(dirs_next::home_dir)
+            .ok_or_else(|| "Could not find Desktop/Downloads directory".to_string())?;
+
+        let base_name = format!("{}.{}", name_hint, ext);
+        let mut dest = desktop.join(&base_name);
+
+        // Avoid overwriting existing files
+        let mut counter = 1u32;
+        while dest.exists() {
+            dest = desktop.join(format!("{}_{}.{}", name_hint, counter, ext));
+            counter += 1;
+        }
+
+        std::fs::copy(src, &dest).map_err(|e| format!("Failed to export: {}", e))?;
+        Ok(dest)
+    }
+
+    fn open_in_file_manager(path: &std::path::Path) {
+        let dir = if path.is_dir() { path } else { path.parent().unwrap_or(path) };
+        #[cfg(target_os = "linux")]
+        { let _ = std::process::Command::new("xdg-open").arg(dir).spawn(); }
+        #[cfg(target_os = "macos")]
+        { let _ = std::process::Command::new("open").arg(dir).spawn(); }
+        #[cfg(target_os = "windows")]
+        { let _ = std::process::Command::new("explorer").arg(dir).spawn(); }
+    }
+
+    fn build_export_buttons(
+        &self,
+        sel: &ImageRecord,
+        images_path: &std::path::Path,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let sel_path = images_path.join(&sel.filename);
+        let prompt_slug: String = sel.prompt.chars()
+            .filter(|c| c.is_alphanumeric() || *c == ' ')
+            .take(30)
+            .collect::<String>()
+            .trim()
+            .replace(' ', "-")
+            .to_lowercase();
+        let name_hint = if prompt_slug.is_empty() { sel.id.clone() } else { prompt_slug };
+
+        let mut row = div()
+            .flex()
+            .flex_row()
+            .gap(px(6.0));
+
+        // Export SVG button (only for SVG files)
+        if sel.file_type == "svg" {
+            let svg_src = sel_path.clone();
+            let hint = name_hint.clone();
+            row = row.child(
+                div()
+                    .id("export-svg-btn")
+                    .px(px(10.0))
+                    .py(px(5.0))
+                    .rounded(px(4.0))
+                    .bg(Theme::button_bg())
+                    .hover(|s| s.bg(Theme::button_hover()))
+                    .cursor_pointer()
+                    .child(div().text_xs().text_color(Theme::text_primary()).child("Export SVG"))
+                    .on_click(cx.listener(move |this, _ev, _window, _cx| {
+                        match Self::export_file(&svg_src, &hint, "svg") {
+                            Ok(dest) => this.export_status = Some(format!("Saved to {}", dest.display())),
+                            Err(e) => this.export_status = Some(e),
+                        }
+                    })),
+            );
+        }
+
+        // Export PNG button
+        let png_src = if sel.file_type == "svg" {
+            sel_path.with_extension("png")
+        } else {
+            sel_path.clone()
+        };
+        if png_src.exists() {
+            let hint = name_hint.clone();
+            row = row.child(
+                div()
+                    .id("export-png-btn")
+                    .px(px(10.0))
+                    .py(px(5.0))
+                    .rounded(px(4.0))
+                    .bg(Theme::button_bg())
+                    .hover(|s| s.bg(Theme::button_hover()))
+                    .cursor_pointer()
+                    .child(div().text_xs().text_color(Theme::text_primary()).child("Export PNG"))
+                    .on_click(cx.listener(move |this, _ev, _window, _cx| {
+                        match Self::export_file(&png_src, &hint, "png") {
+                            Ok(dest) => this.export_status = Some(format!("Saved to {}", dest.display())),
+                            Err(e) => this.export_status = Some(e),
+                        }
+                    })),
+            );
+        }
+
+        // Open folder button
+        let folder = images_path.to_path_buf();
+        row = row.child(
+            div()
+                .id("open-folder-btn")
+                .px(px(10.0))
+                .py(px(5.0))
+                .rounded(px(4.0))
+                .bg(Theme::button_bg())
+                .hover(|s| s.bg(Theme::button_hover()))
+                .cursor_pointer()
+                .child(div().text_xs().text_color(Theme::text_primary()).child("Open Folder"))
+                .on_click(move |_ev, _window, _cx| {
+                    Self::open_in_file_manager(&folder);
+                }),
+        );
+
+        row
     }
 }
 
@@ -470,9 +594,17 @@ impl Workspace {
                     });
                 });
 
-            if img_path.exists() && image_rec.file_type == "png" {
+            // For SVG files, look for the rendered PNG preview
+            let display_path = if image_rec.file_type == "svg" {
+                let png_preview = img_path.with_extension("png");
+                if png_preview.exists() { png_preview } else { img_path.clone() }
+            } else {
+                img_path.clone()
+            };
+
+            if display_path.exists() && (image_rec.file_type == "png" || display_path.extension().is_some_and(|e| e == "png")) {
                 card = card.child(
-                    img(img_path)
+                    img(display_path)
                         .w(px(130.0))
                         .h(px(130.0))
                         .object_fit(ObjectFit::Contain),
@@ -551,9 +683,17 @@ impl Workspace {
                 .justify_center()
                 .overflow_hidden();
 
-            if sel_path.exists() && sel.file_type == "png" {
+            // For SVG files, use the rendered PNG preview
+            let sel_display_path = if sel.file_type == "svg" {
+                let png_preview = sel_path.with_extension("png");
+                if png_preview.exists() { png_preview } else { sel_path.clone() }
+            } else {
+                sel_path.clone()
+            };
+
+            if sel_display_path.exists() && (sel.file_type == "png" || sel_display_path.extension().is_some_and(|e| e == "png")) {
                 img_container = img_container.child(
-                    img(sel_path)
+                    img(sel_display_path)
                         .w(px(220.0))
                         .h(px(220.0))
                         .object_fit(ObjectFit::Contain),
@@ -591,6 +731,21 @@ impl Workspace {
                                 if sel.parent_image_id.is_some() { " | Evolved" } else { "" }
                             )),
                         ),
+                )
+                // Export buttons
+                .child(
+                    div()
+                        .border_t_1()
+                        .border_color(Theme::border())
+                        .pt(px(8.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.0))
+                        .child(div().text_xs().text_color(Theme::text_muted()).child("Export"))
+                        .child(self.build_export_buttons(&sel, &images_path, cx))
+                        .children(self.export_status.as_ref().map(|s| {
+                            div().text_xs().text_color(Theme::green()).child(s.clone())
+                        })),
                 )
                 .child(
                     div()

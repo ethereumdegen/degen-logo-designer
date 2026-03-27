@@ -157,6 +157,14 @@ fn main() {
                                             let save_path = images_path.join(&filename);
                                             fal::download_image(&res.url, &save_path)?;
 
+                                            // Generate PNG preview for SVG files
+                                            if file_type == "svg" {
+                                                let png_preview = images_path.join(format!("{}.png", image_id));
+                                                if let Err(e) = fal::render_svg_to_png(&save_path, &png_preview, 512) {
+                                                    eprintln!("[warn] SVG preview render failed: {}", e);
+                                                }
+                                            }
+
                                             Ok((Some(ImageRecord {
                                                 id: image_id,
                                                 session_id,

@@ -144,6 +144,26 @@ pub fn evolve_logo(
     })
 }
 
+/// Render an SVG file to a PNG preview image
+pub fn render_svg_to_png(svg_path: &Path, png_path: &Path, size: u32) -> Result<(), String> {
+    let svg_data = std::fs::read(svg_path).map_err(|e| format!("Failed to read SVG: {}", e))?;
+    let tree = resvg::usvg::Tree::from_data(&svg_data, &resvg::usvg::Options::default())
+        .map_err(|e| format!("Failed to parse SVG: {}", e))?;
+
+    let tree_size = tree.size();
+    let scale = (size as f32 / tree_size.width()).min(size as f32 / tree_size.height());
+    let transform = resvg::tiny_skia::Transform::from_scale(scale, scale);
+
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(size, size)
+        .ok_or_else(|| "Failed to create pixmap".to_string())?;
+    // Fill with white background
+    pixmap.fill(resvg::tiny_skia::Color::WHITE);
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    pixmap.save_png(png_path).map_err(|e| format!("Failed to save PNG: {}", e))?;
+    eprintln!("[fal] rendered SVG preview -> {:?}", png_path);
+    Ok(())
+}
+
 /// Download an image from URL to disk (blocking)
 pub fn download_image(url: &str, save_path: &Path) -> Result<(), String> {
     eprintln!("[fal] downloading {} -> {:?}", url, save_path);

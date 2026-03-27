@@ -18,3 +18,5 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 directories-next = "2"
+dirs-next = "2"
+resvg = "0.44"
