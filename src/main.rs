@@ -235,7 +235,13 @@ fn main() {
                         let Some(session_id) = session_id else { return };
 
                         let images_path = ev_state.read(cx).images_path.clone();
-                        let parent_path = images_path.join(&selected.filename);
+                        // For SVG files, use the PNG preview for evolve (Kontext needs raster)
+                        let parent_path = if selected.file_type == "svg" {
+                            let png_path = images_path.join(selected.filename.replace(".svg", ".png"));
+                            if png_path.exists() { png_path } else { images_path.join(&selected.filename) }
+                        } else {
+                            images_path.join(&selected.filename)
+                        };
 
                         ev_state.update(cx, |s, _cx| {
                             s.status = GenerationStatus::Generating;
@@ -254,11 +260,8 @@ fn main() {
                                     let image_bytes = std::fs::read(&parent_path)
                                         .map_err(|e| format!("Failed to read image: {}", e))?;
 
-                                    let mime = if selected.file_type == "svg" {
-                                        "image/svg+xml"
-                                    } else {
-                                        "image/png"
-                                    };
+                                    // Always send as PNG (SVGs use their PNG preview)
+                                    let mime = "image/png";
                                     let b64 = base64::Engine::encode(
                                         &base64::engine::general_purpose::STANDARD,
                                         &image_bytes,
