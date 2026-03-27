@@ -12,6 +12,7 @@ pub enum Page {
     Design,
     Settings,
     Logs,
+    History,
 }
 
 pub struct Workspace {
@@ -125,6 +126,20 @@ impl Render for Workspace {
                 this.page = Page::Logs;
             }));
 
+        let history_btn = div()
+            .id("history-btn")
+            .w_full()
+            .px(px(8.0))
+            .py(px(6.0))
+            .rounded(px(4.0))
+            .bg(if page == Page::History { Theme::selection_bg() } else { gpui::transparent_black() })
+            .hover(|s| s.bg(Theme::button_hover()))
+            .cursor_pointer()
+            .child(div().text_sm().text_color(Theme::text_muted()).child("Session History"))
+            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, _cx| {
+                this.page = Page::History;
+            }));
+
         let settings_btn = div()
             .id("settings-btn")
             .w_full()
@@ -172,6 +187,7 @@ impl Render for Workspace {
                     .flex()
                     .flex_col()
                     .gap(px(2.0))
+                    .child(history_btn)
                     .child(logs_btn)
                     .child(settings_btn),
             );
@@ -191,6 +207,11 @@ impl Render for Workspace {
 
         let logs = self.state.read(cx).logs.clone();
 
+        let image_counts = {
+            let conn = self.state.read(cx).db.lock().unwrap();
+            crate::db::get_session_image_counts(&conn).unwrap_or_default()
+        };
+
         let content: AnyElement = match self.page {
             Page::Design => self.render_design_page(
                 has_active,
@@ -206,6 +227,7 @@ impl Render for Workspace {
             ),
             Page::Settings => self.render_settings_page(has_key, cx),
             Page::Logs => self.render_logs_page(logs, cx),
+            Page::History => self.render_history_page(sessions, image_counts, cx),
         };
 
         div()
@@ -289,19 +311,72 @@ impl Workspace {
             );
 
         // --- Generate bar ---
-        let style_state = state_entity.clone();
-        let style_btn = div()
-            .id("style-cycle-btn")
+        let show_dropdown = self.show_style_dropdown;
+
+        let style_toggle = div()
+            .id("style-dropdown-toggle")
             .px(px(10.0))
             .py(px(6.0))
             .rounded(px(4.0))
             .bg(Theme::button_bg())
             .hover(|s| s.bg(Theme::button_hover()))
             .cursor_pointer()
-            .child(div().text_xs().text_color(Theme::purple()).child(format!("Style: {}", style_label)))
-            .on_click(move |_ev, _window, cx| {
-                style_state.update(cx, |s, _cx| { s.next_style(); });
-            });
+            .child(div().text_xs().text_color(Theme::purple()).child(format!("Style: {} {}", style_label, if show_dropdown { "▲" } else { "▼" })))
+            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, _cx| {
+                this.show_style_dropdown = !this.show_style_dropdown;
+            }));
+
+        let style_picker = if show_dropdown {
+            let mut items: Vec<AnyElement> = Vec::new();
+            for (i, (_value, label)) in STYLES.iter().enumerate() {
+                let is_selected = i == style_idx;
+                let state_pick = state_entity.clone();
+                items.push(
+                    div()
+                        .id(SharedString::from(format!("style-{}", i)))
+                        .w_full()
+                        .px(px(10.0))
+                        .py(px(5.0))
+                        .bg(if is_selected { Theme::selection_bg() } else { Theme::bg_panel() })
+                        .hover(|s| s.bg(Theme::button_hover()))
+                        .cursor_pointer()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(if is_selected { Theme::purple() } else { Theme::text_secondary() })
+                                .child(*label),
+                        )
+                        .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                            state_pick.update(cx, |s, _cx| {
+                                s.selected_style_idx = i;
+                            });
+                            this.show_style_dropdown = false;
+                        }))
+                        .into_any_element(),
+                );
+            }
+
+            Some(
+                div()
+                    .absolute()
+                    .top(px(30.0))
+                    .left(px(0.0))
+                    .w(px(180.0))
+                    .bg(Theme::bg_panel())
+                    .border_1()
+                    .border_color(Theme::border())
+                    .rounded(px(4.0))
+                    .py(px(2.0))
+                    .children(items),
+            )
+        } else {
+            None
+        };
+
+        let style_container = div()
+            .relative()
+            .child(style_toggle)
+            .children(style_picker);
 
         let on_gen = self.on_generate.clone();
         let generate_btn = div()
@@ -348,7 +423,7 @@ impl Workspace {
                     .flex_row()
                     .gap(px(8.0))
                     .items_center()
-                    .child(style_btn)
+                    .child(style_container)
                     .child(generate_btn),
             );
 
@@ -787,6 +862,153 @@ impl Workspace {
                     .px(px(32.0))
                     .pb(px(32.0))
                     .children(log_rows),
+            )
+            .into_any_element()
+    }
+
+    fn render_history_page(
+        &self,
+        sessions: Vec<crate::state::Session>,
+        image_counts: std::collections::HashMap<String, usize>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let state_entity = self.state.clone();
+        let mut rows: Vec<AnyElement> = Vec::new();
+
+        if sessions.is_empty() {
+            rows.push(
+                div()
+                    .py(px(20.0))
+                    .text_sm()
+                    .text_color(Theme::text_muted())
+                    .child("No sessions yet. Create one to get started.")
+                    .into_any_element(),
+            );
+        }
+
+        for session in &sessions {
+            let sid = session.id.clone();
+            let count = image_counts.get(&session.id).copied().unwrap_or(0);
+            let state_click = state_entity.clone();
+
+            let created = &session.created_at;
+            let updated = &session.updated_at;
+
+            // Format dates: show just date + time portion
+            let created_short = if created.len() >= 16 { &created[..16] } else { created };
+            let updated_short = if updated.len() >= 16 { &updated[..16] } else { updated };
+
+            let row = div()
+                .id(SharedString::from(format!("hist-{}", sid)))
+                .w_full()
+                .p(px(12.0))
+                .mb(px(6.0))
+                .bg(Theme::bg_panel())
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(Theme::border())
+                .hover(|s| s.bg(Theme::button_hover()))
+                .cursor_pointer()
+                .flex()
+                .flex_row()
+                .justify_between()
+                .items_center()
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.0))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(Theme::text_primary())
+                                .child(session.name.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .gap(px(12.0))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(Theme::text_muted())
+                                        .child(format!("Created: {}", created_short)),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(Theme::text_muted())
+                                        .child(format!("Updated: {}", updated_short)),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap(px(12.0))
+                        .items_center()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(Theme::purple())
+                                .child(format!("{} image{}", count, if count == 1 { "" } else { "s" })),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(Theme::text_secondary())
+                                .child("Open →"),
+                        ),
+                )
+                .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                    state_click.update(cx, |s, _cx| {
+                        s.select_session(&sid);
+                    });
+                    this.page = Page::Design;
+                }));
+
+            rows.push(row.into_any_element());
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .flex_grow()
+            .child(
+                div()
+                    .px(px(32.0))
+                    .pt(px(32.0))
+                    .pb(px(16.0))
+                    .flex()
+                    .flex_row()
+                    .justify_between()
+                    .items_center()
+                    .child(div().text_xl().text_color(Theme::text_primary()).child("Session History"))
+                    .child(
+                        div()
+                            .id("history-back-btn")
+                            .px(px(14.0))
+                            .py(px(6.0))
+                            .rounded(px(4.0))
+                            .bg(Theme::button_bg())
+                            .hover(|s| s.bg(Theme::button_hover()))
+                            .cursor_pointer()
+                            .child(div().text_sm().text_color(Theme::text_secondary()).child("Back to Design"))
+                            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, _cx| {
+                                this.page = Page::Design;
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .id("history-scroll")
+                    .flex_grow()
+                    .overflow_y_scroll()
+                    .px(px(32.0))
+                    .pb(px(32.0))
+                    .children(rows),
             )
             .into_any_element()
     }

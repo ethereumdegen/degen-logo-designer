@@ -176,6 +176,21 @@ pub fn insert_log(conn: &Connection, log: &LogEntry) -> Result<()> {
     Ok(())
 }
 
+pub fn get_session_image_counts(conn: &Connection) -> Result<std::collections::HashMap<String, usize>> {
+    let mut stmt = conn.prepare(
+        "SELECT session_id, COUNT(*) FROM images GROUP BY session_id"
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, usize>(1)?))
+    })?;
+    let mut map = std::collections::HashMap::new();
+    for row in rows {
+        let (sid, count) = row?;
+        map.insert(sid, count);
+    }
+    Ok(map)
+}
+
 pub fn get_logs(conn: &Connection) -> Result<Vec<LogEntry>> {
     let mut stmt = conn.prepare(
         "SELECT id, timestamp, endpoint, prompt, status, detail, duration_ms
