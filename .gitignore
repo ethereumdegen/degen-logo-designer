@@ -1,0 +1,10 @@
+/target
+/data
+.lib/
+*.db
+*.swp
+*.swo
+*~
+.DS_Store
+.env
+.cargo/

@@ -1,0 +1,20 @@
+[package]
+name = "degen-logo-designer"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "degen-logo-designer"
+path = "src/main.rs"
+
+[dependencies]
+gpui = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = "0.4"
+unicode-segmentation = "1"
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+directories-next = "2"
