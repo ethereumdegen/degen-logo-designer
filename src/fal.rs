@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::time::Duration;
 
 const FAL_BASE: &str = "https://fal.run";
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const MODEL_TEXT_TO_VECTOR: &str = "fal-ai/recraft/v4/pro/text-to-vector";
 const MODEL_KONTEXT: &str = "fal-ai/flux-pro/kontext";
 
@@ -45,7 +47,10 @@ pub fn generate_logo(
     prompt: &str,
     style: Option<&str>,
 ) -> Result<FalImageResult, String> {
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::blocking::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
     let url = format!("{}/{}", FAL_BASE, MODEL_TEXT_TO_VECTOR);
 
     let body = TextToVectorReq {
@@ -93,7 +98,10 @@ pub fn evolve_logo(
     prompt: &str,
     image_data_uri: &str,
 ) -> Result<FalImageResult, String> {
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::blocking::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
     let url = format!("{}/{}", FAL_BASE, MODEL_KONTEXT);
 
     let body = KontextReq {
@@ -139,7 +147,10 @@ pub fn evolve_logo(
 /// Download an image from URL to disk (blocking)
 pub fn download_image(url: &str, save_path: &Path) -> Result<(), String> {
     eprintln!("[fal] downloading {} -> {:?}", url, save_path);
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
     let resp = client.get(url).send().map_err(|e| {
         eprintln!("[fal] download error: {}", e);
         format!("Download failed: {}", e)

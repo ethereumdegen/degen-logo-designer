@@ -168,7 +168,7 @@ fn main() {
                                                 created_at: chrono::Utc::now().to_rfc3339(),
                                             }), log))
                                         }
-                                        Err(e) => Ok((None, log)),
+                                        Err(_) => Ok((None, log)),
                                     }
                                 })
                                 .await;
@@ -257,35 +257,64 @@ fn main() {
                                     );
                                     let data_uri = format!("data:{};base64,{}", mime, b64);
 
-                                    let res = fal::evolve_logo(&fal_key, &prompt_text, &data_uri)?;
+                                    let start = std::time::Instant::now();
+                                    let endpoint = "fal-ai/flux-pro/kontext".to_string();
+                                    let evolve_result = fal::evolve_logo(&fal_key, &prompt_text, &data_uri);
+                                    let duration_ms = start.elapsed().as_millis() as u64;
 
-                                    let image_id = uuid::Uuid::new_v4().to_string();
-                                    let filename = format!("{}.png", image_id);
-                                    let save_path = images_path.join(&filename);
-                                    fal::download_image(&res.url, &save_path)?;
+                                    let log = LogEntry {
+                                        id: uuid::Uuid::new_v4().to_string(),
+                                        timestamp: chrono::Utc::now().to_rfc3339(),
+                                        endpoint: endpoint.clone(),
+                                        prompt: prompt_text.clone(),
+                                        status: if evolve_result.is_ok() { "success".to_string() } else { "error".to_string() },
+                                        detail: match &evolve_result {
+                                            Ok(res) => format!("url={}, content_type={}", res.url, res.content_type),
+                                            Err(e) => e.clone(),
+                                        },
+                                        duration_ms,
+                                    };
 
-                                    Ok::<ImageRecord, String>(ImageRecord {
-                                        id: image_id,
-                                        session_id,
-                                        prompt: evolve_text,
-                                        model: "flux-kontext-pro".to_string(),
-                                        parent_image_id: Some(parent_id),
-                                        filename,
-                                        file_type: "png".to_string(),
-                                        created_at: chrono::Utc::now().to_rfc3339(),
-                                    })
+                                    match evolve_result {
+                                        Ok(res) => {
+                                            let image_id = uuid::Uuid::new_v4().to_string();
+                                            let filename = format!("{}.png", image_id);
+                                            let save_path = images_path.join(&filename);
+                                            fal::download_image(&res.url, &save_path)?;
+
+                                            Ok((Some(ImageRecord {
+                                                id: image_id,
+                                                session_id,
+                                                prompt: evolve_text,
+                                                model: "flux-kontext-pro".to_string(),
+                                                parent_image_id: Some(parent_id),
+                                                filename,
+                                                file_type: "png".to_string(),
+                                                created_at: chrono::Utc::now().to_rfc3339(),
+                                            }), log))
+                                        }
+                                        Err(_) => Ok((None, log)),
+                                    }
                                 })
                                 .await;
 
                             let _ = cx.update(|cx| {
                                 match result {
-                                    Ok(img) => {
+                                    Ok((Some(img), log)) => {
                                         state_done.update(cx, |s, _cx| {
+                                            s.add_log(log);
                                             s.add_image(img);
                                             s.status = GenerationStatus::Idle;
                                         });
                                         evolve_input_clear.update(cx, |input, cx| {
                                             input.set_content(String::new(), cx);
+                                        });
+                                    }
+                                    Ok((None, log)) => {
+                                        let err = log.detail.clone();
+                                        state_done.update(cx, |s, _cx| {
+                                            s.add_log(log);
+                                            s.status = GenerationStatus::Error(err);
                                         });
                                     }
                                     Err(e) => {
